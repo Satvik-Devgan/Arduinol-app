@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2f3e9e">
+<title>LostGuard</title>
+<style>
+  :root {
+    --bg: #f3f5fb; --card: #ffffff; --primary: #2f3e9e; --text: #1b2033;
+    --muted: #6b7280; --green: #1e9e5a; --amber: #d98200; --red: #d93636;
+    --grey: #7a8194; --line: #e3e7f2;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  main { max-width: 520px; margin: 0 auto; padding: 22px 18px 40px; }
+  h1 { margin: 0; font-size: 26px; letter-spacing: .08em; color: var(--primary); }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+  h2 {
+    margin: 24px 4px 8px; font-size: 12px; letter-spacing: .12em;
+    color: var(--muted); font-weight: 700;
+  }
+  .card { background: var(--card); border-radius: 16px; padding: 14px 16px; }
+  .status {
+    margin-top: 16px; border-radius: 18px; padding: 18px; color: #fff;
+    background: var(--grey); transition: background .25s;
+  }
+  .status[data-state="1"], .status[data-state="3"] { background: var(--amber); }
+  .status[data-state="2"] { background: var(--green); }
+  .status[data-state="4"] { background: var(--red); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { filter: brightness(1.25); } }
+  @media (prefers-reduced-motion: reduce) { .status[data-state="4"] { animation: none; } }
+  .status strong { display: block; font-size: 22px; }
+  .status span { display: block; font-size: 14px; margin-top: 4px; }
+  button {
+    font: inherit; font-weight: 700; color: #fff; border: 0; border-radius: 12px;
+    min-height: 50px; padding: 0 12px; cursor: pointer; background: var(--primary);
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  button:focus-visible, select:focus-visible { outline: 3px solid #8fa0ff; outline-offset: 2px; }
+  #dismiss { width: 100%; margin-top: 14px; background: #fff; color: var(--red); }
+  #connect { width: 100%; }
+  #connect.on { background: var(--text); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid button { min-height: 64px; }
+  .b-stop { background: var(--red); }
+  .b-status { background: var(--green); }
+  .b-test { background: var(--amber); }
+  .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .label { color: var(--muted); font-size: 12px; font-weight: 700; }
+  #reply { font-size: 17px; font-weight: 700; margin-top: 4px; overflow-wrap: anywhere; }
+  select {
+    font: inherit; width: 100%; min-height: 48px; margin: 8px 0; padding: 0 10px;
+    border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--text);
+  }
+  #log {
+    margin: 0; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto;
+  }
+  .warn {
+    margin-top: 16px; background: #fff4e0; border: 1px solid #f0c98a;
+    border-radius: 14px; padding: 12px 14px; font-size: 14px;
+  }
+  .warn[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LOSTGUARD</h1>
+  <p class="sub">Bluetooth belongings tracker</p>
+
+  <div id="unsupported" class="warn" hidden></div>
+
+  <section id="status" class="status" data-state="0" aria-live="assertive">
+    <strong id="statusTitle">Not connected</strong>
+    <span id="statusDetail">Tap Connect and choose your HC-05</span>
+    <button id="dismiss" hidden>DISMISS ALERT</button>
+  </section>
+
+  <h2>TRACKER</h2>
+  <div class="card">
+    <button id="connect">Connect</button>
+    <p class="hint">Pair the HC-05 in your device's Bluetooth settings first (PIN 1234 or 0000),
+      then pick it from the list the browser shows.</p>
+  </div>
+
+  <h2>CONTROLS</h2>
+  <div class="grid">
+    <button class="cmd" data-cmd="FIND" disabled>Find Item</button>
+    <button class="cmd b-stop" data-cmd="STOP" disabled>Stop Alarm</button>
+    <button class="cmd b-status" data-cmd="STATUS" disabled>Check Status</button>
+    <button class="cmd b-test" data-cmd="TEST" disabled>Test Beep</button>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <div class="label">Tracker reply</div>
+    <div id="reply">Nothing received yet</div>
+  </div>
+
+  <h2>SEPARATION ALERT</h2>
+  <div class="card">
+    <label for="delay">Warn me when the connection has been lost for</label>
+    <select id="delay">
+      <option value="5">5 seconds</option>
+      <option value="10" selected>10 seconds</option>
+      <option value="20">20 seconds</option>
+      <option value="30">30 seconds</option>
+    </select>
+    <p class="hint" style="margin-top:0">Keep this page open and on screen while tracking.
+      A lost connection suggests the item may be left behind. It does not measure distance.</p>
+  </div>
+
+  <h2>ACTIVITY LOG</h2>
+  <div class="card"><pre id="log">No activity yet</pre></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var IDLE = 0, CONNECTING = 1, CONNECTED = 2, RECONNECTING = 3, ALARM = 4;
+  var PING_EVERY_MS = 2000, PONG_TIMEOUT_MS = 8000, RETRY_EVERY_MS = 3000;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $("status"), titleEl = $("statusTitle"), detailEl = $("statusDetail");
+  var connectBtn = $("connect"), dismissBtn = $("dismiss"), replyEl = $("reply");
+  var logEl = $("log"), delayEl = $("delay");
+  var cmdButtons = Array.prototype.slice.call(document.querySelectorAll(".cmd"));
+
+  var state = IDLE;
+  var port = null, reader = null, writer = null;
+  var userClosed = false, heartbeatSeen = false, lastRxAt = 0;
+  var alarmTimer = null, beepTimer = null, audio = null, wakeLock = null;
+  var logLines = [];
+  var encoder = new TextEncoder();
+
+  // ------------------------------------------------------------ helpers
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function log(line) {
+    var t = new Date().toTimeString().slice(0, 8);
+    logLines.unshift(t + "  " + line);
+    if (logLines.length > 80) logLines.length = 80;
+    logEl.textContent = logLines.join("\n");
+  }
+
+  function delayMs() { return parseInt(delayEl.value, 10) * 1000; }
+
+  function setState(next) {
+    state = next;
+    var text = {
+      0: ["Not connected", "Tap Connect and choose your HC-05"],
+      1: ["Connecting...", "Reaching the tracker"],
+      2: ["Connected", "Tracker is nearby and being watched"],
+      3: ["Connection lost", "Trying to reconnect to the tracker"],
+      4: ["ITEM LEFT BEHIND", "The tracker is out of range. Check your belongings."]
+    }[next];
+    statusEl.dataset.state = String(next);
+    titleEl.textContent = text[0];
+    detailEl.textContent = text[1];
+    dismissBtn.hidden = next !== ALARM;
+    connectBtn.textContent = next === IDLE ? "Connect" : "Disconnect";
+    connectBtn.classList.toggle("on", next !== IDLE);
+    cmdButtons.forEach(function (b) { b.disabled = next !== CONNECTED; });
+    document.title = next === ALARM ? "ITEM LEFT BEHIND" : "LostGuard";
+    if (next === CONNECTED) holdWakeLock(); else if (next === IDLE) dropWakeLock();
+  }
+
+  // -------------------------------------------------------------- serial
+
+  async function openPort() {
+    await port.open({ baudRate: 9600 });
+    writer = port.writable.getWriter();
+    heartbeatSeen = false;
+    lastRxAt = Date.now();
+  }
+
+  async function closePort() {
+    try { if (writer) writer.releaseLock(); } catch (e) {}
+    writer = null;
+    try { await port.close(); } catch (e) {}
+  }
+
+  async function write(command) {
+    if (!writer) return;
+    try {
+      await writer.write(encoder.encode(command + "\n"));
+    } catch (e) {
+      dropLink();
+    }
+  }
+
+  // Ends the current read loop, which the session treats as a lost link.
+  function dropLink() {
+    try { if (reader) reader.cancel(); } catch (e) {}
+  }
+
+  function handleLine(text) {
+    if (!text) return;
+    if (text === "PONG") { heartbeatSeen = true; return; }
+    replyEl.textContent = text;
+    log("< " + text);
+  }
+
+  async function readUntilClosed() {
+    var decoder = new TextDecoder();
+    var line = "";
+    try {
+      reader = port.readable.getReader();
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        lastRxAt = Date.now();
+        var textChunk = decoder.decode(chunk.value, { stream: true });
+        for (var i = 0; i < textChunk.length; i++) {
+          var c = textChunk[i];
+          if (c === "\n") { handleLine(line.trim()); line = ""; }
+          else if (c !== "\r") {
+            line += c;
+            if (line.length > 200) { handleLine(line.trim()); line = ""; }
+          }
+        }
+      }
+    } catch (e) {
+      // Link dropped. Handled by the session loop.
+    } finally {
+      try { if (reader) reader.releaseLock(); } catch (e) {}
+      reader = null;
+    }
+  }
+
+  async function session() {
+    while (!userClosed) {
+      clearAlarm();
+      setState(CONNECTED);
+      log("Connected to the tracker");
+
+      await readUntilClosed();
+      await closePort();
+      if (userClosed) break;
+
+      log("Connection lost, alert in " + delayMs() / 1000 + " s unless it returns");
+      setState(RECONNECTING);
+      alarmTimer = setTimeout(raiseAlarm, delayMs());
+
+      while (!userClosed) {
+        try { await openPort(); break; } catch (e) { await sleep(RETRY_EVERY_MS); }
+      }
+    }
+    clearAlarm();
+    await closePort();
+    setState(IDLE);
+    log("Disconnected");
+  }
+
+  async function connect() {
+    startAudio();
+    askNotificationPermission();
+    try {
+      port = await navigator.serial.requestPort();
+    } catch (e) {
+      if (e && e.name !== "NotFoundError") {
+        // Not a cancelled picker: the place hosting this page blocks device access
+        var box = $("unsupported");
+        box.textContent = "Bluetooth access is blocked where this page is being shown. "
+          + "Open the page from its own https address (for example GitHub Pages) in Chrome.";
+        box.hidden = false;
+        log("Bluetooth access was blocked by the browser");
+      }
+      return; // otherwise the picker was closed without a choice
+    }
+    userClosed = false;
+    setState(CONNECTING);
+    try {
+      await openPort();
+    } catch (e) {
+      log("Could not connect. Check the tracker is powered on, in range and paired.");
+      await closePort();
+      setState(IDLE);
+      return;
+    }
+    session();
+  }
+
+  async function disconnect() {
+    if (userClosed) return;
+    userClosed = true;
+    if (state === CONNECTED) {
+      await write("BYE"); // planned disconnect, so the tracker stays quiet
+      await sleep(200);
+    }
+    dropLink();
+  }
+
+  function sendCommand(command) {
+    if (state !== CONNECTED) return;
+    log("> " + command);
+    write(command);
+  }
+
+  function heartbeat() {
+    if (state !== CONNECTED || userClosed) return;
+    write("PING");
+    if (heartbeatSeen && Date.now() - lastRxAt > PONG_TIMEOUT_MS) {
+      log("Tracker stopped answering");
+      dropLink();
+    }
+  }
+
+  // A worker keeps the 2 second heartbeat steady when the tab is in the background.
+  function startHeartbeatClock() {
+    try {
+      var src = "setInterval(function(){postMessage(0)}," + PING_EVERY_MS + ");";
+      var worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+      worker.onmessage = heartbeat;
+      worker.onerror = function () { setInterval(heartbeat, PING_EVERY_MS); };
+    } catch (e) {
+      setInterval(heartbeat, PING_EVERY_MS);
+    }
+  }
+
+  // --------------------------------------------------------------- alert
+
+  function raiseAlarm() {
+    alarmTimer = null;
+    if (userClosed || state !== RECONNECTING) return;
+    setState(ALARM);
+    log("ITEM LEFT BEHIND: the tracker is out of range");
+    startBeeping();
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("ITEM LEFT BEHIND", {
+          body: "LostGuard lost its connection to the tracker. Check your belongings.",
+          tag: "lostguard"
+        });
+      }
+    } catch (e) {} // some mobile browsers only allow notifications from a service worker
+  }
+
+  function clearAlarm() {
+    if (alarmTimer) { clearTimeout(alarmTimer); alarmTimer = null; }
+    stopBeeping();
+  }
+
+  function dismissAlarm() {
+    stopBeeping();
+    if (state === ALARM) {
+      setState(RECONNECTING);
+      log("Alert dismissed, still searching for the tracker");
+    }
+  }
+
+  function startAudio() {
+    try {
+      if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === "suspended") audio.resume();
+    } catch (e) {}
+  }
+
+  function beepOnce() {
+    try { if (navigator.vibrate) navigator.vibrate(300); } catch (e) {}
+    if (!audio) return;
+    try {
+      var osc = audio.createOscillator(), gain = audio.createGain();
+      osc.type = "square";
+      osc.frequency.value = 1100;
+      gain.gain.value = 0.25;
+      osc.connect(gain).connect(audio.destination);
+      osc.start();
+      osc.stop(audio.currentTime + 0.3);
+    } catch (e) {}
+  }
+
+  function startBeeping() {
+    stopBeeping();
+    beepOnce();
+    beepTimer = setInterval(beepOnce, 700);
+  }
+
+  function stopBeeping() {
+    if (beepTimer) { clearInterval(beepTimer); beepTimer = null; }
+    try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+  }
+
+  function askNotificationPermission() {
+    try {
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+    } catch (e) {}
+  }
+
+  // Keeps the screen on while tracking, so the browser does not pause the page.
+  function holdWakeLock() {
+    if (!("wakeLock" in navigator) || wakeLock) return;
+    navigator.wakeLock.request("screen").then(function (lock) {
+      wakeLock = lock;
+      lock.addEventListener("release", function () { wakeLock = null; });
+    }).catch(function () {});
+  }
+
+  function dropWakeLock() {
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  }
+
+  // ---------------------------------------------------------------- wire up
+
+  try {
+    var saved = localStorage.getItem("lostguard-delay");
+    if (saved && delayEl.querySelector('option[value="' + saved + '"]')) delayEl.value = saved;
+  } catch (e) {}
+  delayEl.addEventListener("change", function () {
+    try { localStorage.setItem("lostguard-delay", delayEl.value); } catch (e) {}
+  });
+
+  var problem = "";
+  if (!window.isSecureContext) {
+    problem = "This page must be opened over https (or from localhost) for Bluetooth access to work.";
+  } else if (!("serial" in navigator)) {
+    problem = "This browser cannot talk to the HC-05. Open this page in Chrome on Android "
+      + "(update it to the latest version), or in Chrome or Edge on a computer. iPhones are not supported.";
+  }
+  if (problem) {
+    var box = $("unsupported");
+    box.textContent = problem;
+    box.hidden = false;
+    connectBtn.disabled = true;
+  }
+
+  connectBtn.addEventListener("click", function () {
+    if (state === IDLE) connect(); else disconnect();
+  });
+  dismissBtn.addEventListener("click", dismissAlarm);
+  cmdButtons.forEach(function (b) {
+    b.addEventListener("click", function () { sendCommand(b.dataset.cmd); });
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && state !== IDLE) holdWakeLock();
+  });
+  window.addEventListener("pagehide", function () {
+    if (state === CONNECTED) write("BYE");
+  });
+
+  startHeartbeatClock();
+  setState(IDLE);
+})();
+</script>
+</body>
+</html>
