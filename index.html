@@ -72,7 +72,7 @@
 <body>
 <main>
   <h1>LOSTGUARD</h1>
-  <p class="sub">Bluetooth belongings tracker · v1.1</p>
+  <p class="sub">Bluetooth belongings tracker · v1.2</p>
 
   <div id="unsupported" class="warn" hidden></div>
 
@@ -86,7 +86,7 @@
   <div class="card">
     <button id="connect">Connect</button>
     <p class="hint">Pair the HC-05 in your device's Bluetooth settings first (PIN 1234 or 0000),
-      then pick it from the list the browser shows.</p>
+      then pick it from the list the browser shows. On a Mac, choose <b>cu.HC-05</b>, not the plain HC-05 entry.</p>
   </div>
 
   <h2>CONTROLS</h2>
@@ -316,7 +316,7 @@
     }
     if (!opened) {
       log("Could not connect. Check the tracker is powered on, in range and paired, "
-        + "and that no other app is connected to it.");
+        + "and that no other app is connected to it. On a Mac, pick cu.HC-05 from the list.");
       setState(IDLE);
       return;
     }
