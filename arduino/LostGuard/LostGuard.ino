@@ -1,187 +1,163 @@
 /*
-  LOSTGUARD tracker firmware (Arduino Uno / Nano + HC-05)
+  LOSTGUARD tracker (Arduino Uno / Nano + HC-05)
 
-  Wiring (same as the LostGuard wiring diagram):
-    HC-05 TXD  -> D10
-    HC-05 RXD  <- D11 through the 1k / 2k voltage divider
-    Green LED  -> D4 (220 ohm)
-    Red LED    -> D5 (220 ohm)
-    Buzzer     -> D6
-    Button     -> D7 to GND
+  Pins:
+    HC-05 TXD -> D10          HC-05 RXD <- D11 (through the 1k / 2k divider)
+    Green LED -> D4           Red LED -> D5
+    Buzzer    -> D6           Button  -> D7 to GND
     HC-05 STATE -> D2 (optional, see USE_STATE_PIN)
 
-  Commands from the LostGuard app (each ends with a newline):
-    FIND    start the find-me alarm (buzzer + LEDs)
-    STOP    silence the alarm
-    STATUS  reply with the tracker state
-    TEST    short beep
-    PING    heartbeat, sent by the app every 2 seconds
-    BYE     the app is disconnecting on purpose, do not alarm
+  Commands from the app (each ends with a newline):
+    FIND, STOP, STATUS, TEST, plus PING (heartbeat) and BYE (planned disconnect)
 
-  Behaviour:
-    Phone connected     green LED on. Hold the button to test the buzzer.
-    Phone lost          red LED on and the buzzer beeps (separation alarm).
-                        Press the button to silence it.
-    Just powered on     red LED on, silent, until the phone connects once.
+  Commands are accepted on D10/D11 and also on D0/D1 (hardware serial), so the
+  sketch works with the HC-05 on either pair of pins. You can also type the
+  commands into the Serial Monitor at 9600 baud to test without a phone.
 */
 
 #include <SoftwareSerial.h>
 
-// Set to 1 only if the HC-05 STATE pin is wired to D2.
-// With 0 the tracker uses the app's heartbeat, which works with the
-// four-wire hookup (VCC, GND, TXD, RXD) shown in the wiring diagram.
+// 0 = detect the phone from the app's heartbeat (works with 4 wires to the HC-05)
+// 1 = detect the phone from the HC-05 STATE pin on D2 (only if that wire exists)
 #define USE_STATE_PIN 0
 
-const byte bluetoothState = 2;
-const byte greenLED = 4;
-const byte redLED = 5;
-const byte buzzer = 6;
-const byte button = 7;
-const byte btRxPin = 10;  // Arduino receives here, from HC-05 TXD
-const byte btTxPin = 11;  // Arduino transmits here, to HC-05 RXD
+#define BT_STATE 2
+#define GREEN_LED 4
+#define RED_LED 5
+#define BUZZER 6
+#define BUTTON 7
+#define BT_RX 10   // Arduino receives here, from HC-05 TXD
+#define BT_TX 11   // Arduino transmits here, to HC-05 RXD
 
-SoftwareSerial bt(btRxPin, btTxPin);
+SoftwareSerial bt(BT_RX, BT_TX);
 
-const unsigned long HEARTBEAT_TIMEOUT = 6000;  // ms without PING = phone lost
+const unsigned long HEARTBEAT_TIMEOUT = 6000;  // ms without data = phone lost
 
-char command[16];
-byte commandLength = 0;
-
+bool alarmMuted = false;
+bool previousConnection = false;
+bool finding = false;
+bool heard = false;
 unsigned long lastHeard = 0;
-bool heard = false;      // something arrived from the phone
-bool wasLinked = false;
-bool armed = false;      // true once the phone has connected
-bool muted = false;      // separation alarm silenced with the button
-bool finding = false;    // FIND mode active
 unsigned long testBeepUntil = 0;
+bool previousButton = false;
 
-bool lastButton = HIGH;
-unsigned long lastButtonChange = 0;
+char btLine[16];
+byte btLength = 0;
+char usbLine[16];
+byte usbLength = 0;
 
 void setup() {
-  pinMode(bluetoothState, INPUT);
-  pinMode(greenLED, OUTPUT);
-  pinMode(redLED, OUTPUT);
-  pinMode(buzzer, OUTPUT);
-  pinMode(button, INPUT_PULLUP);
+  pinMode(BT_STATE, INPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(BUTTON, INPUT_PULLUP);
 
-  Serial.begin(9600);  // USB serial monitor, for debugging
-  bt.begin(9600);      // HC-05 default data baud rate
-  Serial.println(F("LostGuard tracker ready"));
+  Serial.begin(9600);
+  bt.begin(9600);
+  Serial.println(F("LOSTGUARD STARTED"));
 }
 
-bool isLinked() {
+// Sends a reply to the phone on both possible wirings
+void reply(const __FlashStringHelper *text) {
+  bt.println(text);
+  Serial.println(text);
+}
+
+void handleCommand(const char *c) {
+  if (strcmp(c, "PING") == 0) {
+    reply(F("PONG"));
+  } else if (strcmp(c, "FIND") == 0) {
+    finding = true;
+    reply(F("FINDING"));
+  } else if (strcmp(c, "STOP") == 0) {
+    finding = false;
+    testBeepUntil = 0;
+    reply(F("STOPPED"));
+  } else if (strcmp(c, "STATUS") == 0) {
+    reply(finding ? F("ONLINE, alarm ON") : F("ONLINE, alarm OFF"));
+  } else if (strcmp(c, "TEST") == 0) {
+    testBeepUntil = millis() + 300;
+    reply(F("TEST OK"));
+  } else if (strcmp(c, "BYE") == 0) {
+    // The app is disconnecting on purpose: stay quiet
+    finding = false;
+    heard = false;
+    alarmMuted = true;
+    previousConnection = false;
+  } else {
+    reply(F("UNKNOWN"));
+  }
+}
+
+void readFrom(Stream &port, char *line, byte &length) {
+  while (port.available()) {
+    char ch = port.read();
+    lastHeard = millis();
+    heard = true;
+    if (ch == '\n' || ch == '\r') {
+      if (length > 0) {
+        line[length] = '\0';
+        length = 0;
+        handleCommand(line);
+      }
+    } else if (length < 15) {
+      line[length++] = toupper(ch);
+    }
+  }
+}
+
+bool phoneConnected() {
 #if USE_STATE_PIN
-  return digitalRead(bluetoothState) == HIGH;
+  return digitalRead(BT_STATE) == HIGH;
 #else
   return heard && (millis() - lastHeard < HEARTBEAT_TIMEOUT);
 #endif
 }
 
-void handleCommand(const char *c) {
-  if (strcmp(c, "PING") == 0) {
-    bt.println(F("PONG"));
-    return;
-  }
-
-  Serial.print(F("Command: "));
-  Serial.println(c);
-
-  if (strcmp(c, "FIND") == 0) {
-    finding = true;
-    bt.println(F("FINDING"));
-  } else if (strcmp(c, "STOP") == 0) {
-    finding = false;
-    testBeepUntil = 0;
-    bt.println(F("STOPPED"));
-  } else if (strcmp(c, "STATUS") == 0) {
-    bt.print(F("ONLINE, alarm "));
-    bt.print(finding ? F("ON") : F("OFF"));
-    bt.print(F(", up "));
-    bt.print(millis() / 1000);
-    bt.println(F(" s"));
-  } else if (strcmp(c, "TEST") == 0) {
-    testBeepUntil = millis() + 300;
-    bt.println(F("TEST OK"));
-  } else if (strcmp(c, "BYE") == 0) {
-    // Planned disconnect: go quiet instead of raising the alarm
-    armed = false;
-    finding = false;
-    heard = false;
-  } else {
-    bt.println(F("UNKNOWN"));
-  }
-}
-
-void readBluetooth() {
-  while (bt.available()) {
-    char ch = bt.read();
-    lastHeard = millis();
-    heard = true;
-
-    if (ch == '\n' || ch == '\r') {
-      if (commandLength > 0) {
-        command[commandLength] = '\0';
-        commandLength = 0;
-        handleCommand(command);
-      }
-    } else if (commandLength < sizeof(command) - 1) {
-      command[commandLength++] = toupper(ch);
-    }
-  }
-}
-
 void loop() {
-  readBluetooth();
+  readFrom(bt, btLine, btLength);
+  readFrom(Serial, usbLine, usbLength);
 
-  bool linked = isLinked();
-  if (linked && !wasLinked) {
-    armed = true;     // phone is here: watch for separation from now on
-    muted = false;
-    Serial.println(F("Phone connected"));
+  bool connected = phoneConnected();
+
+  // Phone reconnect detection
+  if (connected && !previousConnection) {
+    alarmMuted = false;
   }
-  if (!linked && wasLinked) {
+  if (!connected && previousConnection) {
     finding = false;
-    Serial.println(F("Phone lost"));
   }
-  wasLinked = linked;
+  previousConnection = connected;
 
-  // Button with a simple debounce
-  bool pressed = digitalRead(button) == LOW;
-  bool reading = pressed ? LOW : HIGH;
-  if (reading != lastButton && millis() - lastButtonChange > 40) {
-    lastButton = reading;
-    lastButtonChange = millis();
-    if (pressed) {
-      if (finding) {
-        finding = false;            // found it: stop the find-me alarm
-        if (linked) bt.println(F("STOPPED"));
-      } else if (!linked && armed) {
-        muted = true;               // silence the separation alarm
-      } else if (linked) {
-        bt.println(F("BUTTON"));
-      }
-    }
-  }
-
-  bool fastBlink = (millis() / 150) % 2 == 0;
-  bool slowBlink = (millis() / 500) % 2 == 0;
+  bool pressed = digitalRead(BUTTON) == LOW;
+  bool justPressed = pressed && !previousButton;
+  previousButton = pressed;
 
   if (finding) {
-    // Find-me: fast beeps and flashing LEDs
-    digitalWrite(greenLED, fastBlink);
-    digitalWrite(redLED, !fastBlink);
-    digitalWrite(buzzer, fastBlink);
-  } else if (linked) {
-    // Phone connected
-    digitalWrite(greenLED, HIGH);
-    digitalWrite(redLED, LOW);
-    bool testBeep = millis() < testBeepUntil;
-    digitalWrite(buzzer, (pressed || testBeep) ? HIGH : LOW);
+    // Find Item: fast beeps and flashing LEDs until STOP or the button
+    bool on = (millis() / 150) % 2 == 0;
+    digitalWrite(GREEN_LED, on);
+    digitalWrite(RED_LED, !on);
+    digitalWrite(BUZZER, on);
+    if (justPressed) {
+      finding = false;
+      reply(F("STOPPED"));
+    }
+  } else if (connected) {
+    // Bluetooth connected
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BUZZER, millis() < testBeepUntil ? HIGH : LOW);
   } else {
-    // Phone not connected
-    digitalWrite(greenLED, LOW);
-    digitalWrite(redLED, HIGH);
-    digitalWrite(buzzer, (armed && !muted && slowBlink) ? HIGH : LOW);
+    // Bluetooth disconnected
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    if (pressed) {
+      alarmMuted = true;
+    }
+    digitalWrite(BUZZER, alarmMuted ? LOW : HIGH);
   }
+
+  delay(5);
 }
