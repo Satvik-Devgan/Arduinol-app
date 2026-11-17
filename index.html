@@ -72,7 +72,7 @@
 <body>
 <main>
   <h1>LOSTGUARD</h1>
-  <p class="sub">Bluetooth belongings tracker</p>
+  <p class="sub">Bluetooth belongings tracker · v1.1</p>
 
   <div id="unsupported" class="warn" hidden></div>
 
@@ -174,7 +174,12 @@
   // -------------------------------------------------------------- serial
 
   async function openPort() {
-    await port.open({ baudRate: 9600 });
+    try {
+      await port.open({ baudRate: 9600 });
+    } catch (e) {
+      // A port left open by an earlier attempt can be used as it is
+      if (!(e && e.name === "InvalidStateError" && port.readable && port.writable)) throw e;
+    }
     writer = port.writable.getWriter();
     heartbeatSeen = false;
     lastRxAt = Date.now();
@@ -202,7 +207,14 @@
 
   function handleLine(text) {
     if (!text) return;
-    if (text === "PONG") { heartbeatSeen = true; return; }
+    if (text === "PONG") {
+      if (!heartbeatSeen) {
+        heartbeatSeen = true;
+        log("Tracker is answering");
+        if (state === CONNECTED) detailEl.textContent = "Tracker is answering and being watched";
+      }
+      return;
+    }
     replyEl.textContent = text;
     log("< " + text);
   }
@@ -238,7 +250,9 @@
     while (!userClosed) {
       clearAlarm();
       setState(CONNECTED);
-      log("Connected to the tracker");
+      detailEl.textContent = "Linked to the HC-05, waiting for the tracker to answer";
+      log("Connected to the HC-05");
+      watchForAnswer();
 
       await readUntilClosed();
       await closePort();
@@ -258,6 +272,17 @@
     log("Disconnected");
   }
 
+  // Bluetooth can be linked while the Arduino itself hears nothing. Say so.
+  function watchForAnswer() {
+    var opened = lastRxAt;
+    setTimeout(function () {
+      if (state !== CONNECTED || heartbeatSeen || lastRxAt !== opened) return;
+      detailEl.textContent = "Linked to the HC-05, but the Arduino is not answering";
+      log("No answer from the Arduino. Upload the latest LostGuard sketch, and check "
+        + "HC-05 TXD goes to D10 and D11 goes through the divider to HC-05 RXD.");
+    }, 7000);
+  }
+
   async function connect() {
     startAudio();
     askNotificationPermission();
@@ -270,17 +295,28 @@
         box.textContent = "Bluetooth access is blocked where this page is being shown. "
           + "Open the page from its own https address (for example GitHub Pages) in Chrome.";
         box.hidden = false;
-        log("Bluetooth access was blocked by the browser");
+        log("Bluetooth access was blocked by the browser (" + e.name + ": " + e.message + ")");
+      } else {
+        log("No device chosen. If the HC-05 was not in the list, pair it in Bluetooth settings first.");
       }
-      return; // otherwise the picker was closed without a choice
+      return;
     }
     userClosed = false;
     setState(CONNECTING);
-    try {
-      await openPort();
-    } catch (e) {
-      log("Could not connect. Check the tracker is powered on, in range and paired.");
-      await closePort();
+    var opened = false;
+    for (var attempt = 1; attempt <= 3 && !opened && !userClosed; attempt++) {
+      try {
+        await openPort();
+        opened = true;
+      } catch (e) {
+        log("Attempt " + attempt + " failed (" + (e && e.name) + ": " + (e && e.message) + ")");
+        await closePort();
+        if (attempt < 3) await sleep(1500);
+      }
+    }
+    if (!opened) {
+      log("Could not connect. Check the tracker is powered on, in range and paired, "
+        + "and that no other app is connected to it.");
       setState(IDLE);
       return;
     }
