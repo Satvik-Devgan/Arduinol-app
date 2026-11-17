@@ -30,6 +30,10 @@
 #define BT_RX 10   // Arduino receives here, from HC-05 TXD
 #define BT_TX 11   // Arduino transmits here, to HC-05 RXD
 
+// HC-05 data speed. Most modules use 9600. If the wiring test sketch only
+// reads clearly at another speed (often 38400), put that number here.
+#define BT_BAUD 9600
+
 SoftwareSerial bt(BT_RX, BT_TX);
 
 const unsigned long HEARTBEAT_TIMEOUT = 6000;  // ms without data = phone lost
@@ -56,7 +60,7 @@ void setup() {
   pinMode(BUTTON, INPUT_PULLUP);
 
   Serial.begin(9600);
-  bt.begin(9600);
+  bt.begin(BT_BAUD);
   Serial.println(F("LOSTGUARD STARTED"));
 }
 
