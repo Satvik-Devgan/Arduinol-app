@@ -5,7 +5,7 @@
     HC-05 TXD -> D10          HC-05 RXD <- D11 (through the 1k / 2k divider)
     Green LED -> D4           Red LED -> D5
     Buzzer    -> D6           Button  -> D7 to GND
-    HC-05 STATE -> D2 (optional, see USE_STATE_PIN)
+    HC-05 STATE -> D2 (see USE_STATE_PIN)
 
   Commands from the app (each ends with a newline):
     FIND, STOP, STATUS, TEST, plus PING (heartbeat) and BYE (planned disconnect)
@@ -17,9 +17,10 @@
 
 #include <SoftwareSerial.h>
 
-// 0 = detect the phone from the app's heartbeat (works with 4 wires to the HC-05)
-// 1 = detect the phone from the HC-05 STATE pin on D2 (only if that wire exists)
-#define USE_STATE_PIN 0
+// 1 = the HC-05 STATE pin is wired to D2. The phone counts as connected when
+//     STATE is HIGH or when the app's heartbeat is arriving.
+// 0 = no wire on D2. Only the app's heartbeat is used.
+#define USE_STATE_PIN 1
 
 #define BT_STATE 2
 #define GREEN_LED 4
@@ -37,6 +38,7 @@ bool alarmMuted = false;
 bool previousConnection = false;
 bool finding = false;
 bool heard = false;
+bool byeReceived = false;
 unsigned long lastHeard = 0;
 unsigned long testBeepUntil = 0;
 bool previousButton = false;
@@ -83,8 +85,7 @@ void handleCommand(const char *c) {
     // The app is disconnecting on purpose: stay quiet
     finding = false;
     heard = false;
-    alarmMuted = true;
-    previousConnection = false;
+    byeReceived = true;
   } else {
     reply(F("UNKNOWN"));
   }
@@ -108,10 +109,11 @@ void readFrom(Stream &port, char *line, byte &length) {
 }
 
 bool phoneConnected() {
+  bool heartbeat = heard && (millis() - lastHeard < HEARTBEAT_TIMEOUT);
 #if USE_STATE_PIN
-  return digitalRead(BT_STATE) == HIGH;
+  return heartbeat || digitalRead(BT_STATE) == HIGH;
 #else
-  return heard && (millis() - lastHeard < HEARTBEAT_TIMEOUT);
+  return heartbeat;
 #endif
 }
 
@@ -124,9 +126,14 @@ void loop() {
   // Phone reconnect detection
   if (connected && !previousConnection) {
     alarmMuted = false;
+    byeReceived = false;
+    Serial.println(F("PHONE CONNECTED"));
   }
   if (!connected && previousConnection) {
     finding = false;
+    alarmMuted = byeReceived;  // planned disconnect: stay quiet
+    byeReceived = false;
+    Serial.println(F("PHONE LOST"));
   }
   previousConnection = connected;
 
